@@ -17,21 +17,35 @@ const upload = multer({
 });
 
 // ── Gmail OAuth2 Setup ────────────────────────────────────────────────────────
-const SMTP_USER      = process.env.SMTP_EMAIL            || 'farizahmad112005@gmail.com';
-const CLIENT_ID      = process.env.GOOGLE_CLIENT_ID      || '';
-const CLIENT_SECRET  = process.env.GOOGLE_CLIENT_SECRET  || '';
-const REFRESH_TOKEN  = process.env.GOOGLE_REFRESH_TOKEN  || '';
+const SMTP_USER     = process.env.SMTP_EMAIL           || 'farizahmad112005@gmail.com';
+const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '';
+const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN || '';
+
+// Startup check — confirms env vars are loaded on Render
+console.log('📧 Email config check:');
+console.log('  SMTP_USER     :', SMTP_USER);
+console.log('  CLIENT_ID     :', CLIENT_ID     ? `${CLIENT_ID.slice(0, 12)}...` : '❌ MISSING');
+console.log('  CLIENT_SECRET :', CLIENT_SECRET ? '✅ set'                        : '❌ MISSING');
+console.log('  REFRESH_TOKEN :', REFRESH_TOKEN ? '✅ set'                        : '❌ MISSING');
 
 const oauth2Client = new google.auth.OAuth2(
   CLIENT_ID,
   CLIENT_SECRET,
   'https://developers.google.com/oauthplayground'
 );
-oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
 
-// Creates a fresh transporter with a valid access token each time
+// Set credentials — must include refresh_token so getAccessToken() can renew
+oauth2Client.setCredentials({
+  refresh_token: REFRESH_TOKEN,
+});
+
+// Creates a fresh transporter — fetches a new access token each time using the refresh token
 const createTransporter = async () => {
-  const { token } = await oauth2Client.getAccessToken();
+  const tokenResponse = await oauth2Client.getAccessToken();
+  const accessToken   = tokenResponse?.token;
+  if (!accessToken) throw new Error('Failed to obtain access token from Google OAuth2');
+
   return nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -40,7 +54,7 @@ const createTransporter = async () => {
       clientId:     CLIENT_ID,
       clientSecret: CLIENT_SECRET,
       refreshToken: REFRESH_TOKEN,
-      accessToken:  token!,
+      accessToken,
     },
   });
 };
