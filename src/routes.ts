@@ -23,8 +23,11 @@ const SMTP_PASS = (process.env.SMTP_PASSWORD || 'nyazgaiserqiuwog').replace(/\s+
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth:    { user: SMTP_USER, pass: SMTP_PASS },
-  pool:    true,   // keep SMTP connection alive
+  pool:    true,          // keep SMTP connection alive between sends
   maxConnections: 3,
+  connectionTimeout: 10000,  // 10s — fail fast if Gmail unreachable
+  greetingTimeout:   8000,
+  socketTimeout:     15000,
 });
 
 // ── Fire-and-forget email helper ──────────────────────────────────────────────
@@ -70,10 +73,8 @@ router.post('/auth/send-verification', async (req, res) => {
       [email, code, expiresAt]
     );
 
-    // Respond immediately — email goes out in background
-    res.json({ message: 'Verification code sent' });
-
-    sendEmailAsync({
+    // OTP must be awaited — user needs to know if delivery fails
+    await transporter.sendMail({
       from:    SMTP_USER,
       to:      email,
       subject: 'Your Verification Code — Hayat Traditional',
@@ -91,9 +92,16 @@ router.post('/auth/send-verification', async (req, res) => {
       `,
     });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: (err as Error).message });
+    console.log(`✅ OTP sent to ${email}: ${code}`);
+    res.json({ message: 'Verification code sent' });
+
+  } catch (err: any) {
+    console.error('❌ OTP email failed:', err.message);
+    // Clean up stored code since we couldn't deliver it
+    await query('DELETE FROM email_verifications WHERE email = ?', [email]).catch(() => {});
+    res.status(500).json({
+      message: 'Failed to send verification email. Please check the address and try again.',
+    });
   }
 });
 
