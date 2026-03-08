@@ -2,8 +2,7 @@ import express from 'express';
 import { query } from './db.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import nodemailer from 'nodemailer';
-import { google } from 'googleapis';
+import { Resend } from 'resend';
 import multer from 'multer';
 import crypto from 'crypto';
 
@@ -16,60 +15,20 @@ const upload = multer({
   limits:  { fileSize: 50 * 1024 * 1024 },
 });
 
-// ── Gmail OAuth2 Setup ────────────────────────────────────────────────────────
-const SMTP_USER     = process.env.SMTP_EMAIL           || 'farizahmad112005@gmail.com';
-const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '';
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN || '';
+// ── Resend Setup ──────────────────────────────────────────────────────────────
+const resend      = new Resend(process.env.RESEND_API_KEY);
+const FROM        = 'onboarding@resend.dev';
+const ADMIN_EMAIL = process.env.SMTP_EMAIL || 'farizahmad112005@gmail.com';
 
-// Startup check — confirms env vars are loaded on Render
-console.log('📧 Email config check:');
-console.log('  SMTP_USER     :', SMTP_USER);
-console.log('  CLIENT_ID     :', CLIENT_ID     ? `${CLIENT_ID.slice(0, 12)}...` : '❌ MISSING');
-console.log('  CLIENT_SECRET :', CLIENT_SECRET ? '✅ set'                        : '❌ MISSING');
-console.log('  REFRESH_TOKEN :', REFRESH_TOKEN ? '✅ set'                        : '❌ MISSING');
-
-const oauth2Client = new google.auth.OAuth2(
-  CLIENT_ID,
-  CLIENT_SECRET,
-  'https://developers.google.com/oauthplayground'
-);
-
-// Set credentials — must include refresh_token so getAccessToken() can renew
-oauth2Client.setCredentials({
-  refresh_token: REFRESH_TOKEN,
-});
-
-// Creates a fresh transporter — fetches a new access token each time using the refresh token
-const createTransporter = async () => {
-  const tokenResponse = await oauth2Client.getAccessToken();
-  const accessToken   = tokenResponse?.token;
-  if (!accessToken) throw new Error('Failed to obtain access token from Google OAuth2');
-
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      type:         'OAuth2',
-      user:         SMTP_USER,
-      clientId:     CLIENT_ID,
-      clientSecret: CLIENT_SECRET,
-      refreshToken: REFRESH_TOKEN,
-      accessToken,
-    },
-  });
-};
+console.log('📧 Resend config:');
+console.log('  RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅ set' : '❌ MISSING');
+console.log('  ADMIN_EMAIL   :', ADMIN_EMAIL);
 
 // ── Fire-and-forget email helper ──────────────────────────────────────────────
-// Sends email in the background — NEVER blocks an HTTP response.
-const sendEmailAsync = (options: nodemailer.SendMailOptions) => {
-  createTransporter().then(transporter => {
-    return transporter.sendMail({ ...options, from: SMTP_USER });
-  }).then(() => {
-    console.log(`✅ Email sent to ${options.to}`);
-  }).catch((err: any) => {
-    console.error(`❌ Email failed to ${options.to}:`, err.message);
-  });
-  // Returns immediately — caller does NOT await this
+const sendEmailAsync = (to: string, subject: string, html: string) => {
+  resend.emails.send({ from: FROM, to, subject, html })
+    .then(() => console.log(`✅ Email sent to ${to}`))
+    .catch((err: any) => console.error(`❌ Email failed to ${to}:`, err.message));
 };
 
 // ── Auth middleware ───────────────────────────────────────────────────────────
@@ -87,7 +46,6 @@ const authenticateToken = (req: any, res: any, next: any) => {
 // AUTH ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Send OTP
 router.post('/auth/send-verification', async (req, res) => {
   const { email } = req.body;
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -104,33 +62,27 @@ router.post('/auth/send-verification', async (req, res) => {
       [email, code, expiresAt]
     );
 
-    // Always log OTP to console as fallback
     console.log(`\n${'='.repeat(50)}`);
     console.log(`[OTP] Email: ${email}  Code: ${code}`);
     console.log(`${'='.repeat(50)}\n`);
 
-    // Send via Gmail OAuth2 — works on Render free tier
-    sendEmailAsync({
-      to:      email,
-      subject: 'Your Verification Code — Hayat Traditional',
-      html: `
-        <div style="font-family:Georgia,serif;max-width:480px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
-          <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px;margin-bottom:8px">HAYAT TRADITIONAL</h2>
-          <p style="color:#78716c;font-size:13px;margin-bottom:24px">Your verification code</p>
-          <div style="background:#fff;border:2px solid #1c1917;text-align:center;padding:24px 0;font-size:36px;font-weight:bold;letter-spacing:10px;color:#1c1917">
-            ${code}
-          </div>
-          <p style="color:#a8a29e;font-size:12px;margin-top:16px;text-align:center">
-            Expires in 10 minutes. Do not share this code.
-          </p>
+    sendEmailAsync(email, 'Your Verification Code — Hayat Traditional', `
+      <div style="font-family:Georgia,serif;max-width:480px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
+        <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px;margin-bottom:8px">HAYAT TRADITIONAL</h2>
+        <p style="color:#78716c;font-size:13px;margin-bottom:24px">Your verification code</p>
+        <div style="background:#fff;border:2px solid #1c1917;text-align:center;padding:24px 0;font-size:36px;font-weight:bold;letter-spacing:10px;color:#1c1917">
+          ${code}
         </div>
-      `,
-    });
+        <p style="color:#a8a29e;font-size:12px;margin-top:16px;text-align:center">
+          Expires in 10 minutes. Do not share this code.
+        </p>
+      </div>
+    `);
 
     res.json({ message: 'Verification code sent' });
 
   } catch (err: any) {
-    console.error('❌ send-verification DB error:', err.message);
+    console.error('❌ send-verification error:', err.message);
     res.status(500).json({ message: 'Server error. Please try again.' });
   }
 });
@@ -141,7 +93,7 @@ router.post('/auth/login', async (req, res) => {
     const users: any = await query('SELECT * FROM users WHERE email = ?', [email]);
     if (users.length === 0) return res.status(400).json({ message: 'User not found' });
 
-    const user = users[0];
+    const user  = users[0];
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(400).json({ message: 'Invalid password' });
 
@@ -305,7 +257,7 @@ router.post('/products', authenticateToken, upload.array('images'), async (req: 
   const { name, description, price, category, stock_status, discount_percentage, image_url } = req.body;
   const files = req.files as Express.Multer.File[];
   try {
-    const mainBuf  = files?.length > 0 ? files[0].buffer : null;
+    const mainBuf     = files?.length > 0 ? files[0].buffer : null;
     const result: any = await query(
       'INSERT INTO products (name, description, price, category, stock_status, discount_percentage, image_url, image_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [name, description, price, category, stock_status, discount_percentage, image_url || '', mainBuf]
@@ -327,7 +279,7 @@ router.put('/products/:id', authenticateToken, upload.array('images'), async (re
   const { name, description, price, category, stock_status, discount_percentage, image_url } = req.body;
   const files = req.files as Express.Multer.File[];
   try {
-    let sql    = 'UPDATE products SET name=?, description=?, price=?, category=?, stock_status=?, discount_percentage=?, image_url=?';
+    let sql       = 'UPDATE products SET name=?, description=?, price=?, category=?, stock_status=?, discount_percentage=?, image_url=?';
     let params: any[] = [name, description, price, category, stock_status, discount_percentage, image_url || ''];
     if (files?.length > 0) {
       sql += ', image_data=?';
@@ -379,24 +331,19 @@ router.post('/orders', async (req, res) => {
     }
 
     if (!isVerified) {
-      if (!verificationCode) {
-        return res.status(400).json({ message: 'Email verification required' });
-      }
+      if (!verificationCode) return res.status(400).json({ message: 'Email verification required' });
       const verifications: any = await query(
         'SELECT id FROM email_verifications WHERE email = ? AND code = ? AND expires_at > NOW()',
         [customer_email, verificationCode]
       );
-      if (verifications.length === 0) {
-        return res.status(400).json({ message: 'Invalid or expired verification code' });
-      }
+      if (verifications.length === 0) return res.status(400).json({ message: 'Invalid or expired verification code' });
       await query('DELETE FROM email_verifications WHERE email = ?', [customer_email]);
     }
 
-    // ── 2. Save order to DB ───────────────────────────────────────────────────
+    // ── 2. Save order ─────────────────────────────────────────────────────────
     const result: any = await query(
-      `INSERT INTO orders
-         (user_id, customer_name, customer_email, customer_phone,
-          shipping_address, city, postal_code, total_amount)
+      `INSERT INTO orders (user_id, customer_name, customer_email, customer_phone,
+        shipping_address, city, postal_code, total_amount)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [user_id || null, customer_name, customer_email, customer_phone,
        shipping_address, city, postal_code, total_amount]
@@ -416,76 +363,57 @@ router.post('/orders', async (req, res) => {
     res.status(201).json({ message: 'Order placed successfully', orderId });
 
     // ── 4. Send emails in background ──────────────────────────────────────────
-    const itemsHtml = items
-      .map((i: any) => `<tr>
+    const itemsHtml = items.map((i: any) => `
+      <tr>
         <td style="padding:6px 12px;border-bottom:1px solid #e7e5e4">${i.name}</td>
         <td style="padding:6px 12px;border-bottom:1px solid #e7e5e4;text-align:center">×${i.quantity}</td>
         <td style="padding:6px 12px;border-bottom:1px solid #e7e5e4;text-align:right">PKR ${Number(i.price).toLocaleString()}</td>
-      </tr>`)
-      .join('');
+      </tr>`).join('');
 
-    // Admin notification
-    sendEmailAsync({
-      to:      SMTP_USER,
-      subject: `🛍️ New Order #${orderId} — Hayat Traditional`,
-      html: `
-        <div style="font-family:Georgia,serif;max-width:600px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
-          <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px">New Order Received</h2>
-          <p><strong>Order #${orderId}</strong></p>
-          <p><strong>Customer:</strong> ${customer_name}<br>
-             <strong>Email:</strong> ${customer_email}<br>
-             <strong>Phone:</strong> ${customer_phone}<br>
-             <strong>Address:</strong> ${shipping_address}, ${city} ${postal_code}</p>
-          <table style="width:100%;border-collapse:collapse;margin-top:16px">
-            <thead>
-              <tr style="background:#1c1917;color:#fff">
-                <th style="padding:8px 12px;text-align:left">Item</th>
-                <th style="padding:8px 12px;text-align:center">Qty</th>
-                <th style="padding:8px 12px;text-align:right">Price</th>
-              </tr>
-            </thead>
-            <tbody>${itemsHtml}</tbody>
-          </table>
-          <p style="text-align:right;font-size:18px;font-weight:bold;margin-top:12px">
-            Total: PKR ${Number(total_amount).toLocaleString()}
-          </p>
-        </div>
-      `,
-    });
+    sendEmailAsync(ADMIN_EMAIL, `🛍️ New Order #${orderId} — Hayat Traditional`, `
+      <div style="font-family:Georgia,serif;max-width:600px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
+        <h2 style="color:#1c1917;letter-spacing:2px">New Order Received</h2>
+        <p><strong>Order #${orderId}</strong></p>
+        <p><strong>Customer:</strong> ${customer_name}<br>
+           <strong>Email:</strong> ${customer_email}<br>
+           <strong>Phone:</strong> ${customer_phone}<br>
+           <strong>Address:</strong> ${shipping_address}, ${city} ${postal_code}</p>
+        <table style="width:100%;border-collapse:collapse;margin-top:16px">
+          <thead>
+            <tr style="background:#1c1917;color:#fff">
+              <th style="padding:8px 12px;text-align:left">Item</th>
+              <th style="padding:8px 12px;text-align:center">Qty</th>
+              <th style="padding:8px 12px;text-align:right">Price</th>
+            </tr>
+          </thead>
+          <tbody>${itemsHtml}</tbody>
+        </table>
+        <p style="text-align:right;font-size:18px;font-weight:bold;margin-top:12px">
+          Total: PKR ${Number(total_amount).toLocaleString()}
+        </p>
+      </div>
+    `);
 
-    // Customer confirmation
-    sendEmailAsync({
-      to:      customer_email,
-      subject: `Order Confirmed #${orderId} — Hayat Traditional`,
-      html: `
-        <div style="font-family:Georgia,serif;max-width:600px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
-          <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px;text-align:center">HAYAT TRADITIONAL</h2>
-          <div style="width:48px;height:2px;background:#d4af37;margin:8px auto 24px"></div>
-          <h3 style="color:#1c1917">Thank you for your order, ${customer_name}!</h3>
-          <p style="color:#57534e">
-            Your order has been received and is being processed.
-            We will notify you once it ships.
-          </p>
-          <div style="background:#fff;border:1px solid #e7e5e4;padding:20px;margin:20px 0">
-            <p style="margin:0 0 8px"><strong>Order #${orderId}</strong></p>
-            <table style="width:100%;border-collapse:collapse">
-              <tbody>${itemsHtml}</tbody>
-            </table>
-            <div style="border-top:1px solid #e7e5e4;margin-top:12px;padding-top:12px;text-align:right">
-              <strong>Total: PKR ${Number(total_amount).toLocaleString()}</strong>
-            </div>
+    sendEmailAsync(customer_email, `Order Confirmed #${orderId} — Hayat Traditional`, `
+      <div style="font-family:Georgia,serif;max-width:600px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
+        <h2 style="color:#1c1917;letter-spacing:2px;text-align:center">HAYAT TRADITIONAL</h2>
+        <div style="width:48px;height:2px;background:#d4af37;margin:8px auto 24px"></div>
+        <h3 style="color:#1c1917">Thank you for your order, ${customer_name}!</h3>
+        <p style="color:#57534e">Your order has been received and is being processed. We will notify you once it ships.</p>
+        <div style="background:#fff;border:1px solid #e7e5e4;padding:20px;margin:20px 0">
+          <p style="margin:0 0 8px"><strong>Order #${orderId}</strong></p>
+          <table style="width:100%;border-collapse:collapse"><tbody>${itemsHtml}</tbody></table>
+          <div style="border-top:1px solid #e7e5e4;margin-top:12px;padding-top:12px;text-align:right">
+            <strong>Total: PKR ${Number(total_amount).toLocaleString()}</strong>
           </div>
-          <p style="color:#57534e"><strong>Delivery:</strong> Cash on Delivery</p>
-          <p style="color:#57534e"><strong>Address:</strong> ${shipping_address}, ${city} ${postal_code}</p>
-          <hr style="border:none;border-top:1px solid #e7e5e4;margin:24px 0"/>
-          <p style="color:#a8a29e;font-size:12px;text-align:center">
-            Hayat Traditional · Premium Fabric Since 1990
-          </p>
         </div>
-      `,
-    });
+        <p style="color:#57534e"><strong>Delivery:</strong> Cash on Delivery</p>
+        <p style="color:#57534e"><strong>Address:</strong> ${shipping_address}, ${city} ${postal_code}</p>
+        <hr style="border:none;border-top:1px solid #e7e5e4;margin:24px 0"/>
+        <p style="color:#a8a29e;font-size:12px;text-align:center">Hayat Traditional · Premium Fabric Since 1990</p>
+      </div>
+    `);
 
-    // Twilio WhatsApp (optional)
     if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
       import('twilio').then(({ default: twilio }) => {
         const client = twilio(process.env.TWILIO_ACCOUNT_SID!, process.env.TWILIO_AUTH_TOKEN!);
@@ -505,7 +433,7 @@ router.post('/orders', async (req, res) => {
 
 router.get('/orders', authenticateToken, async (req: any, res) => {
   try {
-    const isAdmin = req.user.role === 'admin';
+    const isAdmin  = req.user.role === 'admin';
     const orders: any = await query(
       isAdmin
         ? 'SELECT * FROM orders ORDER BY created_at DESC'
