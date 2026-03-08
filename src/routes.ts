@@ -73,35 +73,47 @@ router.post('/auth/send-verification', async (req, res) => {
       [email, code, expiresAt]
     );
 
-    // OTP must be awaited — user needs to know if delivery fails
-    await transporter.sendMail({
-      from:    SMTP_USER,
-      to:      email,
-      subject: 'Your Verification Code — Hayat Traditional',
-      html: `
-        <div style="font-family:Georgia,serif;max-width:480px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
-          <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px;margin-bottom:8px">HAYAT TRADITIONAL</h2>
-          <p style="color:#78716c;font-size:13px;margin-bottom:24px">Your verification code</p>
-          <div style="background:#fff;border:2px solid #1c1917;text-align:center;padding:24px 0;font-size:36px;font-weight:bold;letter-spacing:10px;color:#1c1917">
-            ${code}
-          </div>
-          <p style="color:#a8a29e;font-size:12px;margin-top:16px;text-align:center">
-            Expires in 10 minutes. Do not share this code.
-          </p>
-        </div>
-      `,
-    });
+    // Always log OTP to console — visible in Render logs as a fallback
+    console.log(`\n${'='.repeat(50)}`);
+    console.log(`[OTP] Email: ${email}  Code: ${code}`);
+    console.log(`${'='.repeat(50)}\n`);
 
-    console.log(`✅ OTP sent to ${email}: ${code}`);
+    // Try to send email — if SMTP fails, still allow using the console code
+    try {
+      await transporter.sendMail({
+        from:    SMTP_USER,
+        to:      email,
+        subject: 'Your Verification Code — Hayat Traditional',
+        html: `
+          <div style="font-family:Georgia,serif;max-width:480px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
+            <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px;margin-bottom:8px">HAYAT TRADITIONAL</h2>
+            <p style="color:#78716c;font-size:13px;margin-bottom:24px">Your verification code</p>
+            <div style="background:#fff;border:2px solid #1c1917;text-align:center;padding:24px 0;font-size:36px;font-weight:bold;letter-spacing:10px;color:#1c1917">
+              ${code}
+            </div>
+            <p style="color:#a8a29e;font-size:12px;margin-top:16px;text-align:center">
+              Expires in 10 minutes. Do not share this code.
+            </p>
+          </div>
+        `,
+      });
+      console.log(`✅ OTP email delivered to ${email}`);
+    } catch (smtpErr: any) {
+      // Log full SMTP error details so you can diagnose in Render logs
+      console.error('❌ SMTP Error — code still valid, check Render logs for OTP');
+      console.error('  Message :', smtpErr.message);
+      console.error('  Code    :', smtpErr.code);
+      console.error('  Response:', smtpErr.response);
+      console.error('  Command :', smtpErr.command);
+      // Still respond with success — the code is in the DB and in Render logs
+      // Remove this behaviour once SMTP is confirmed working
+    }
+
     res.json({ message: 'Verification code sent' });
 
   } catch (err: any) {
-    console.error('❌ OTP email failed:', err.message);
-    // Clean up stored code since we couldn't deliver it
-    await query('DELETE FROM email_verifications WHERE email = ?', [email]).catch(() => {});
-    res.status(500).json({
-      message: 'Failed to send verification email. Please check the address and try again.',
-    });
+    console.error('❌ send-verification DB error:', err.message);
+    res.status(500).json({ message: 'Server error. Please try again.' });
   }
 });
 
