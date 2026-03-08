@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { initDB, query } from './db';
+import { initDB, query } from './db.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
