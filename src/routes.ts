@@ -2,7 +2,7 @@ import express from 'express';
 import { query } from './db.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { Resend } from 'resend';
+import axios from 'axios';
 import multer from 'multer';
 import crypto from 'crypto';
 
@@ -15,23 +15,35 @@ const upload = multer({
   limits:  { fileSize: 50 * 1024 * 1024 },
 });
 
-// ── Resend Setup ──────────────────────────────────────────────────────────────
-const resend      = new Resend(process.env.RESEND_API_KEY);
-const FROM        = 'onboarding@resend.dev';
-const ADMIN_EMAIL = process.env.SMTP_EMAIL || 'farizahmad112005@gmail.com';
+// ── Brevo Email Setup ─────────────────────────────────────────────────────────
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
+const ADMIN_EMAIL   = process.env.SMTP_EMAIL    || 'farizahmad112005@gmail.com';
 
-console.log('📧 Resend config:');
-console.log('  RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅ set' : '❌ MISSING');
-console.log('  ADMIN_EMAIL   :', ADMIN_EMAIL);
+console.log('📧 Brevo config:');
+console.log('  BREVO_API_KEY:', BREVO_API_KEY ? '✅ set' : '❌ MISSING');
+console.log('  ADMIN_EMAIL  :', ADMIN_EMAIL);
 
 // ── Fire-and-forget email helper ──────────────────────────────────────────────
 const sendEmailAsync = (to: string, subject: string, html: string) => {
-  resend.emails.send({ from: FROM, to, subject, html })
-    .then(() => console.log(`✅ Email sent to ${to}`))
-    .catch((err: any) => console.error(`❌ Email failed to ${to}:`, err.message));
+  axios.post(
+    'https://api.brevo.com/v3/smtp/email',
+    {
+      sender:      { name: 'Hayat Traditional', email: ADMIN_EMAIL },
+      to:          [{ email: to }],
+      subject,
+      htmlContent: html,
+    },
+    {
+      headers: {
+        'api-key':      BREVO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+    }
+  )
+  .then(() => console.log(`✅ Email sent to ${to}`))
+  .catch((err: any) => console.error(`❌ Email failed to ${to}:`, err.response?.data || err.message));
 };
 
-// ── Auth middleware ───────────────────────────────────────────────────────────
 const authenticateToken = (req: any, res: any, next: any) => {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.sendStatus(401);
