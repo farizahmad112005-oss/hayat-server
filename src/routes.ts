@@ -3,6 +3,7 @@ import { query } from './db.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
+import { google } from 'googleapis';
 import multer from 'multer';
 import crypto from 'crypto';
 
@@ -15,25 +16,41 @@ const upload = multer({
   limits:  { fileSize: 50 * 1024 * 1024 },
 });
 
-// ── Singleton email transporter ───────────────────────────────────────────────
-// Created once at startup — not re-created per request.
-const SMTP_USER = process.env.SMTP_EMAIL    || 'farizahmad112005@gmail.com';
-const SMTP_PASS = (process.env.SMTP_PASSWORD || 'nyazgaiserqiuwog').replace(/\s+/g, '');
+// ── Gmail OAuth2 Setup ────────────────────────────────────────────────────────
+const SMTP_USER      = process.env.SMTP_EMAIL            || 'farizahmad112005@gmail.com';
+const CLIENT_ID      = process.env.GOOGLE_CLIENT_ID      || '';
+const CLIENT_SECRET  = process.env.GOOGLE_CLIENT_SECRET  || '';
+const REFRESH_TOKEN  = process.env.GOOGLE_REFRESH_TOKEN  || '';
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth:    { user: SMTP_USER, pass: SMTP_PASS },
-  pool:    true,          // keep SMTP connection alive between sends
-  maxConnections: 3,
-  connectionTimeout: 10000,  // 10s — fail fast if Gmail unreachable
-  greetingTimeout:   8000,
-  socketTimeout:     15000,
-});
+const oauth2Client = new google.auth.OAuth2(
+  CLIENT_ID,
+  CLIENT_SECRET,
+  'https://developers.google.com/oauthplayground'
+);
+oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
+
+// Creates a fresh transporter with a valid access token each time
+const createTransporter = async () => {
+  const { token } = await oauth2Client.getAccessToken();
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      type:         'OAuth2',
+      user:         SMTP_USER,
+      clientId:     CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      refreshToken: REFRESH_TOKEN,
+      accessToken:  token!,
+    },
+  });
+};
 
 // ── Fire-and-forget email helper ──────────────────────────────────────────────
 // Sends email in the background — NEVER blocks an HTTP response.
 const sendEmailAsync = (options: nodemailer.SendMailOptions) => {
-  transporter.sendMail(options).then(() => {
+  createTransporter().then(transporter => {
+    return transporter.sendMail({ ...options, from: SMTP_USER });
+  }).then(() => {
     console.log(`✅ Email sent to ${options.to}`);
   }).catch((err: any) => {
     console.error(`❌ Email failed to ${options.to}:`, err.message);
@@ -56,7 +73,7 @@ const authenticateToken = (req: any, res: any, next: any) => {
 // AUTH ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Send OTP — no DNS lookup, just generate + store + fire email
+// Send OTP
 router.post('/auth/send-verification', async (req, res) => {
   const { email } = req.body;
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -73,41 +90,28 @@ router.post('/auth/send-verification', async (req, res) => {
       [email, code, expiresAt]
     );
 
-    // Always log OTP to console — visible in Render logs as a fallback
+    // Always log OTP to console as fallback
     console.log(`\n${'='.repeat(50)}`);
     console.log(`[OTP] Email: ${email}  Code: ${code}`);
     console.log(`${'='.repeat(50)}\n`);
 
-    // Try to send email — if SMTP fails, still allow using the console code
-    try {
-      await transporter.sendMail({
-        from:    SMTP_USER,
-        to:      email,
-        subject: 'Your Verification Code — Hayat Traditional',
-        html: `
-          <div style="font-family:Georgia,serif;max-width:480px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
-            <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px;margin-bottom:8px">HAYAT TRADITIONAL</h2>
-            <p style="color:#78716c;font-size:13px;margin-bottom:24px">Your verification code</p>
-            <div style="background:#fff;border:2px solid #1c1917;text-align:center;padding:24px 0;font-size:36px;font-weight:bold;letter-spacing:10px;color:#1c1917">
-              ${code}
-            </div>
-            <p style="color:#a8a29e;font-size:12px;margin-top:16px;text-align:center">
-              Expires in 10 minutes. Do not share this code.
-            </p>
+    // Send via Gmail OAuth2 — works on Render free tier
+    sendEmailAsync({
+      to:      email,
+      subject: 'Your Verification Code — Hayat Traditional',
+      html: `
+        <div style="font-family:Georgia,serif;max-width:480px;margin:auto;padding:32px;background:#fafaf9;border:1px solid #e7e5e4">
+          <h2 style="font-family:'Cinzel',serif;color:#1c1917;letter-spacing:2px;margin-bottom:8px">HAYAT TRADITIONAL</h2>
+          <p style="color:#78716c;font-size:13px;margin-bottom:24px">Your verification code</p>
+          <div style="background:#fff;border:2px solid #1c1917;text-align:center;padding:24px 0;font-size:36px;font-weight:bold;letter-spacing:10px;color:#1c1917">
+            ${code}
           </div>
-        `,
-      });
-      console.log(`✅ OTP email delivered to ${email}`);
-    } catch (smtpErr: any) {
-      // Log full SMTP error details so you can diagnose in Render logs
-      console.error('❌ SMTP Error — code still valid, check Render logs for OTP');
-      console.error('  Message :', smtpErr.message);
-      console.error('  Code    :', smtpErr.code);
-      console.error('  Response:', smtpErr.response);
-      console.error('  Command :', smtpErr.command);
-      // Still respond with success — the code is in the DB and in Render logs
-      // Remove this behaviour once SMTP is confirmed working
-    }
+          <p style="color:#a8a29e;font-size:12px;margin-top:16px;text-align:center">
+            Expires in 10 minutes. Do not share this code.
+          </p>
+        </div>
+      `,
+    });
 
     res.json({ message: 'Verification code sent' });
 
@@ -342,7 +346,7 @@ router.delete('/products/:id', authenticateToken, async (req: any, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ORDER ROUTES  ← THE MAIN FIX IS HERE
+// ORDER ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/orders', async (req, res) => {
@@ -357,8 +361,6 @@ router.post('/orders', async (req, res) => {
 
     if (user_id) {
       const users: any = await query('SELECT email FROM users WHERE id = ?', [user_id]);
-      // Allow verified if logged-in user — regardless of which email they entered
-      // (frontend already verified the alternative email via OTP)
       if (users.length > 0) isVerified = true;
     }
 
@@ -376,7 +378,7 @@ router.post('/orders', async (req, res) => {
       await query('DELETE FROM email_verifications WHERE email = ?', [customer_email]);
     }
 
-    // ── 2. Save order to DB (fast — milliseconds) ─────────────────────────────
+    // ── 2. Save order to DB ───────────────────────────────────────────────────
     const result: any = await query(
       `INSERT INTO orders
          (user_id, customer_name, customer_email, customer_phone,
@@ -387,7 +389,6 @@ router.post('/orders', async (req, res) => {
     );
     const orderId = result.insertId;
 
-    // Insert order items
     await Promise.all(
       items.map((item: any) =>
         query(
@@ -397,10 +398,10 @@ router.post('/orders', async (req, res) => {
       )
     );
 
-    // ── 3. Respond IMMEDIATELY — emails fire in background ────────────────────
+    // ── 3. Respond immediately ────────────────────────────────────────────────
     res.status(201).json({ message: 'Order placed successfully', orderId });
 
-    // ── 4. Send emails asynchronously (does NOT block the response above) ─────
+    // ── 4. Send emails in background ──────────────────────────────────────────
     const itemsHtml = items
       .map((i: any) => `<tr>
         <td style="padding:6px 12px;border-bottom:1px solid #e7e5e4">${i.name}</td>
@@ -411,7 +412,6 @@ router.post('/orders', async (req, res) => {
 
     // Admin notification
     sendEmailAsync({
-      from:    SMTP_USER,
       to:      SMTP_USER,
       subject: `🛍️ New Order #${orderId} — Hayat Traditional`,
       html: `
@@ -441,7 +441,6 @@ router.post('/orders', async (req, res) => {
 
     // Customer confirmation
     sendEmailAsync({
-      from:    SMTP_USER,
       to:      customer_email,
       subject: `Order Confirmed #${orderId} — Hayat Traditional`,
       html: `
@@ -472,7 +471,7 @@ router.post('/orders', async (req, res) => {
       `,
     });
 
-    // Twilio WhatsApp (optional — only if credentials exist)
+    // Twilio WhatsApp (optional)
     if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
       import('twilio').then(({ default: twilio }) => {
         const client = twilio(process.env.TWILIO_ACCOUNT_SID!, process.env.TWILIO_AUTH_TOKEN!);
